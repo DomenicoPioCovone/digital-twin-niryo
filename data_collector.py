@@ -48,6 +48,20 @@ try:
 except ImportError:
     paramiko = None
 
+# Carica variabili da .env se presente (senza dipendenze esterne)
+def _load_dotenv(path: str = ".env"):
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip())
+
+_load_dotenv()
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -702,15 +716,15 @@ def parse_args():
         description="Raccoglie dati da un robot Niryo NED2 e li salva in CSV",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--ip",       "-i", default="192.168.0.102",  help="IP del robot")
-    p.add_argument("--user",     "-u", default="niryo",          help="username SSH")
-    p.add_argument("--password", "-p", default="robotics",       help="password SSH")
-    p.add_argument("--key",            default=None,             help="chiave privata SSH")
-    p.add_argument("--interval", "-t", type=float, default=0.05, help="intervallo campionamento (s)")
-    p.add_argument("--output",   "-o", default="robot_data.csv", help="file CSV di output")
-    p.add_argument("--count",          type=int,   default=None,  help="numero campioni (default: infinito)")
-    p.add_argument("--daemon-port",    type=int,   default=DAEMON_PORT, help="porta TCP daemon sul robot")
-    p.add_argument("--debug",          action="store_true",       help="abilita logging debug")
+    p.add_argument("--ip",       "-i", default=os.environ.get("ROBOT_IP",       "192.168.0.102"),  help="IP del robot")
+    p.add_argument("--user",     "-u", default=os.environ.get("ROBOT_USER",     "niryo"),          help="username SSH")
+    p.add_argument("--password", "-p", default=os.environ.get("ROBOT_PASSWORD", ""),               help="password SSH")
+    p.add_argument("--key",            default=os.environ.get("ROBOT_SSH_KEY",  None) or None,     help="chiave privata SSH")
+    p.add_argument("--interval", "-t", type=float, default=float(os.environ.get("SAMPLE_INTERVAL", "0.05")), help="intervallo campionamento (s)")
+    p.add_argument("--output",   "-o", default=os.environ.get("OUTPUT_FILE",    "data/robot_data.csv"), help="file CSV di output")
+    p.add_argument("--count",          type=int,   default=None,                                    help="numero campioni (default: infinito)")
+    p.add_argument("--daemon-port",    type=int,   default=int(os.environ.get("DAEMON_PORT", str(DAEMON_PORT))), help="porta TCP daemon sul robot")
+    p.add_argument("--debug",          action="store_true",                                         help="abilita logging debug")
     return p.parse_args()
 
 
