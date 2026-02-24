@@ -3,6 +3,70 @@
 Raccoglie dati dal robot Niryo NED2 a frequenza configurabile (default **50 ms / 20 Hz**)
 e li salva in CSV con timestamp ISO a microsecondi.
 
+## Specifiche del robot (rilevate via SSH)
+
+Queste informazioni sono statiche e utili per la riproducibilità degli esperimenti.
+
+### Hardware
+
+| Parametro | Valore |
+|-----------|--------|
+| Modello | **Niryo NED2** |
+| Hostname | `ned2-46-98c-521` |
+| Compute unit | Raspberry Pi 4 Model B Rev 1.5 (BCM2835) |
+| Architettura | `aarch64` |
+| RAM | 3.8 GB |
+| Storage | 24 GB (microSD), 9 GB usati al momento dell'acquisizione |
+| Interfacce di rete | `wlan0` (192.168.0.102), `eth0` (169.254.200.200), `apwlan0` (10.10.10.10) |
+
+### Software di sistema
+
+| Parametro | Valore |
+|-----------|--------|
+| OS | Ubuntu 20.04.6 LTS (Focal Fossa) |
+| Kernel | Linux 5.4.0-1078-raspi (aarch64, PREEMPT) |
+| Python | 3.8.10 |
+| ROS | Noetic Ninjemys |
+| Stack software Niryo | v5.0.0 (`niryo_robot_*` packages) |
+| Dynamixel SDK (ROS) | 3.7.51 |
+
+### Librerie Python sul robot (venv `/home/niryo/catkin_ws_venv`)
+
+| Libreria | Versione | Uso |
+|----------|----------|-----|
+| `pyniryo` | 1.2.1 | API ufficiale robot (TCP su `127.0.0.1:40001`) |
+| `numpy` | 1.24.4 | Calcolo numerico |
+| `opencv-python` | 4.11.0.86 | Computer vision |
+| `pymodbus` | 3.6.9 | Modbus TCP (usato internamente dal robot) |
+| `requests` | 2.32.4 | HTTP client |
+| `psutil` | 5.9.8 | Metriche di sistema |
+| `PyYAML` | 6.0.3 | Configurazione ROS |
+| `RPi.GPIO` | 0.6.5 | GPIO Raspberry Pi |
+
+### Limiti cinematici (da `robot_command_validation.yaml`)
+
+**Spazio cartesiano (end-effector):**
+
+| Asse | Min | Max |
+|------|-----|-----|
+| x | −0.50 m | +0.50 m |
+| y | −0.50 m | +0.50 m |
+| z | −0.15 m | +0.60 m |
+| roll | −π rad | +π rad |
+| pitch | −π rad | +π rad |
+| yaw | −π rad | +π rad |
+
+### Architettura di comunicazione
+
+```
+[Niryo NED2]
+  ROS Noetic (catkin_ws)
+    └─ niryo_robot_hardware_interface  →  TCP :40001  ←  pyniryo
+    └─ niryo_robot_modbus              →  TCP :5020   (Modbus, solo locale)
+    └─ daemon _dc_daemon.py            →  TCP :9876   ←  data_collector.py (questo progetto)
+  SSH :22  ←  metriche OS (CPU, RAM, load, disk)
+```
+
 ## Architettura
 
 ```
