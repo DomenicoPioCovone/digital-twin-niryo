@@ -5,7 +5,7 @@ data_collector.py  -  Digital Twin data logger per robot Niryo NED2
 Architettura a tre thread per campionamento ad alta frequenza (≥ 50 ms):
 
   Thread A – Sampler (priorità alta)
-    • Si connette al daemon pyniryo in esecuzione sul robot via TCP socket
+    • Si connette al daemon pyniryo in esecuzione sul robot via TCP socket,
     • Legge dati robot + timestamp monotonic ogni <interval> secondi
     • Mette ogni campione in una queue.Queue in RAM (zero I/O disco)
 
@@ -41,6 +41,7 @@ import socket
 import sys
 import threading
 import time
+import urllib.request
 from typing import Dict, Optional
 
 try:
@@ -237,6 +238,24 @@ while True:
     except Exception:
         pass
 """
+
+# ---------------------------------------------------------------------------
+# HTTP Sender – invia ogni campione al server locale (opzionale)
+# ---------------------------------------------------------------------------
+
+def http_post(url: str, payload: dict, timeout: float = 1.0):
+    """Invia un campione come JSON via HTTP POST. Silenzioso in caso di errore."""
+    try:
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=timeout)
+    except Exception:
+        pass  # non bloccare il sampler se il server locale è assente
+
 
 # ---------------------------------------------------------------------------
 # SSH helpers
@@ -555,6 +574,7 @@ FIELDNAMES = [
 
 
 def ensure_header(path: str):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     if not os.path.exists(path):
         with open(path, "w", newline="") as f:
             csv.DictWriter(f, fieldnames=FIELDNAMES).writeheader()
@@ -605,7 +625,8 @@ def build_row(robot: dict, sys_m: dict) -> dict:
 
 def collect_loop(ip: str, username: str, password: str, key_filename: Optional[str],
                  interval: float, out_csv: str, count: Optional[int],
-                 daemon_port: int = DAEMON_PORT):
+                 daemon_port: int = DAEMON_PORT,
+                 stream_url: Optional[str] = None):
 
     ensure_header(out_csv)
 
@@ -668,6 +689,9 @@ def collect_loop(ip: str, username: str, password: str, key_filename: Optional[s
             row   = build_row(robot, sys_m)
             sample_q.put_nowait(row)           # RAM only, mai blocca
 
+            if stream_url:
+                http_post(stream_url, row)
+
             sampled += 1
             if sampled % log_every == 0:
                 LOGGER.info(
@@ -724,7 +748,8 @@ def parse_args():
     p.add_argument("--output",   "-o", default=os.environ.get("OUTPUT_FILE",    "data/robot_data.csv"), help="file CSV di output")
     p.add_argument("--count",          type=int,   default=None,                                    help="numero campioni (default: infinito)")
     p.add_argument("--daemon-port",    type=int,   default=int(os.environ.get("DAEMON_PORT", str(DAEMON_PORT))), help="porta TCP daemon sul robot")
-    p.add_argument("--debug",          action="store_true",                                         help="abilita logging debug")
+    p.add_argument("--stream-url",     default=os.environ.get("STREAM_URL", None),                              help="URL a cui fare POST di ogni campione (es. http://localhost:8765/sample)")
+    p.add_argument("--debug",          action="store_true",                                                      help="abilita logging debug")
     return p.parse_args()
 
 
@@ -745,8 +770,10 @@ def main():
         out_csv=args.output,
         count=args.count,
         daemon_port=args.daemon_port,
+        stream_url=args.stream_url,
     )
 
 
 if __name__ == "__main__":
     main()
+
