@@ -28,7 +28,7 @@ Il sistema usa più thread per migliorare le prestazioni.
 
 ## DittoSender
 
-Funge da legante tra il data_collector e Ditto. Prende una riga dati generata ,suddivide le features e fa una PUT tramite richieste HTTP verso Ditto
+- Funge da legante tra il data_collector e Ditto. Prende una riga dati generata ,suddivide le features e fa una PUT tramite richieste HTTP verso Ditto
 Thread A (Sampler) -> build_row() -> queue Ditto -> Thread D (DittoWriter) -> DittoSender.publish_row() -> HTTP REST API -> Eclipse Ditto (Digital Twin)
 ---
 
