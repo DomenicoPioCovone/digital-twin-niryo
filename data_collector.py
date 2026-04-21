@@ -44,6 +44,7 @@ import time
 import urllib.request
 from typing import Dict, Optional
 
+from LoadFromCSV import DittoSender
 try:
     import paramiko
 except ImportError:
@@ -59,7 +60,8 @@ def _load_dotenv(path: str = ".env"):
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip())
+            value = value.split("#")[0].strip()
+            os.environ.setdefault(key.strip(), value)
 
 _load_dotenv()
 
@@ -72,6 +74,10 @@ LOGGER.setLevel(logging.INFO)
 _h = logging.StreamHandler()
 _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
 LOGGER.addHandler(_h)
+
+def _log(thread: str, level: int, msg: str, *args):
+    """Logga con prefisso [Thread X]."""
+    LOGGER.log(level, f"[Thread {thread}] {msg}", *args)
 
 # ---------------------------------------------------------------------------
 # Porta TCP del daemon pyniryo sul robot
@@ -238,24 +244,6 @@ while True:
     except Exception:
         pass
 """
-
-# ---------------------------------------------------------------------------
-# HTTP Sender – invia ogni campione al server locale (opzionale)
-# ---------------------------------------------------------------------------
-
-def http_post(url: str, payload: dict, timeout: float = 1.0):
-    """Invia un campione come JSON via HTTP POST. Silenzioso in caso di errore."""
-    try:
-        data = json.dumps(payload).encode()
-        req = urllib.request.Request(
-            url, data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=timeout)
-    except Exception:
-        pass  # non bloccare il sampler se il server locale è assente
-
 
 # ---------------------------------------------------------------------------
 # SSH helpers
@@ -479,12 +467,54 @@ class SysMetricsThread(threading.Thread):
                 data = self._read()
                 with self._lock:
                     self.latest = data
+                _log("C", logging.DEBUG, "metriche aggiornate: cpu=%s%%", data.get("cpu_percent", "?"))
             except Exception as e:
-                LOGGER.debug("SysMetrics error: %s", e)
+                _log("C", logging.DEBUG, "errore lettura metriche: %s", e)
             elapsed = time.monotonic() - t0
             remaining = self._interval - elapsed
             if remaining > 0:
                 self._stop.wait(remaining)
+
+
+# ---------------------------------------------------------------------------
+# Thread D – DittoWriter (legge dalla ditto_queue, delega a DittoSender)
+# ---------------------------------------------------------------------------
+
+class DittoWriterThread(threading.Thread):
+    """Legge campioni dalla ditto_queue e li pubblica su Eclipse Ditto
+    usando DittoSender.publish_row come libreria."""
+
+    def __init__(self,
+                 ditto_queue: "queue.Queue[Optional[dict]]",
+                 ditto_url: str = DittoSender.DEFAULT_DITTO_URL,
+                 thing_id: str  = DittoSender.DEFAULT_THING_ID,
+                 auth: tuple    = DittoSender.DEFAULT_AUTH):
+        super().__init__(name="DittoWriter", daemon=True)
+        self._q        = ditto_queue
+        self._url      = ditto_url
+        self._thing_id = thing_id
+        self._auth     = auth
+        self._stop     = threading.Event()
+        self.published = 0
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        _log("D", logging.INFO, "avviato → %s/%s", self._url, self._thing_id)
+        while not self._stop.is_set():
+            try:
+                item = self._q.get(timeout=0.5)
+                if item is None:
+                    self._stop.set()
+                    break
+                DittoSender.publish_row(item, self._url, self._thing_id, self._auth)
+                self.published += 1
+                _log("D", logging.DEBUG, "PUT #%d  ts=%s", self.published, item.get("timestamp","?"))
+                self._q.task_done()
+            except queue.Empty:
+                continue
+        _log("D", logging.INFO, "fermato. Totale PUT: %d", self.published)
 
 
 # ---------------------------------------------------------------------------
@@ -507,17 +537,17 @@ class WriterThread(threading.Thread):
         self._stop.set()
 
     def run(self):
+        _log("B", logging.INFO, "avviato → %s", self._path)
         with open(self._path, "a", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=FIELDNAMES)
             last_flush = time.monotonic()
             while not self._stop.is_set():
                 batch = []
-                # Raccoglie tutto ciò che c'è in queue, max 0.5 s di attesa
                 deadline = time.monotonic() + self.FLUSH_INTERVAL
                 while time.monotonic() < deadline:
                     try:
                         item = self._q.get(timeout=max(0.001, deadline - time.monotonic()))
-                        if item is None:          # sentinel di stop
+                        if item is None:
                             self._stop.set()
                             break
                         batch.append(item)
@@ -528,15 +558,15 @@ class WriterThread(threading.Thread):
                 if batch:
                     writer.writerows(batch)
                     self.written += len(batch)
+                    _log("B", logging.DEBUG, "scritte %d righe (tot %d)", len(batch), self.written)
 
-                # flush su disco ogni FLUSH_INTERVAL
                 now = time.monotonic()
                 if now - last_flush >= self.FLUSH_INTERVAL:
                     fh.flush()
                     os.fsync(fh.fileno())
                     last_flush = now
 
-            # Flush finale di eventuali residui
+            # Flush finale
             try:
                 while True:
                     item = self._q.get_nowait()
@@ -546,6 +576,7 @@ class WriterThread(threading.Thread):
             except queue.Empty:
                 pass
             fh.flush()
+        _log("B", logging.INFO, "fermato. Righe scritte: %d", self.written)
 
 
 # ---------------------------------------------------------------------------
@@ -626,7 +657,8 @@ def build_row(robot: dict, sys_m: dict) -> dict:
 def collect_loop(ip: str, username: str, password: str, key_filename: Optional[str],
                  interval: float, out_csv: str, count: Optional[int],
                  daemon_port: int = DAEMON_PORT,
-                 stream_url: Optional[str] = None):
+                 write_csv: bool = True,
+                 ditto_url: Optional[str] = None):
 
     ensure_header(out_csv)
 
@@ -646,23 +678,39 @@ def collect_loop(ip: str, username: str, password: str, key_filename: Optional[s
     # --- Thread C: metriche sistema (SSH, ogni 1 s) ---
     sys_thread = SysMetricsThread(ssh, interval=1.0)
     sys_thread.start()
-    LOGGER.info("Thread C (SysMetrics) avviato")
+    _log("C", logging.INFO, "avviato (metriche SSH ogni 1 s)")
 
-    # --- Queue condivisa tra Thread A e Thread B ---
+    # --- Queue condivisa tra Thread A e Thread B (CSV) ---
     sample_q: "queue.Queue[Optional[dict]]" = queue.Queue(maxsize=10_000)
 
-    # --- Thread B: Writer ---
-    writer = WriterThread(out_csv, sample_q)
-    writer.start()
-    LOGGER.info("Thread B (Writer) avviato → %s", out_csv)
+    # --- Thread B: Writer CSV (opzionale) ---
+    writer: Optional[WriterThread] = None
+    if write_csv:
+        writer = WriterThread(out_csv, sample_q)
+        writer.start()
+    else:
+        _log("B", logging.INFO, "disabilitato (--no-csv)")
+
+    # --- Thread D: DittoWriter (opzionale) ---
+    ditto_q: "queue.Queue[Optional[dict]]" = queue.Queue(maxsize=10_000)
+    ditto_writer: Optional[DittoWriterThread] = None
+    if ditto_url:
+        ditto_writer = DittoWriterThread(ditto_q, ditto_url=ditto_url)
+        ditto_writer.start()
+    else:
+        _log("D", logging.WARNING, "disabilitato: DITTO_URL non impostato")
 
     # --- Thread A: Sampler (gira nel main thread) ---
     daemon_cli = DaemonClient(ip, daemon_port)
     if not daemon_cli.connect():
-        LOGGER.error("Connessione al daemon fallita.")
+        _log("A", logging.ERROR, "connessione al daemon fallita.")
         sys_thread.stop()
         sample_q.put(None)
-        writer.join(timeout=5)
+        if writer:
+            writer.join(timeout=5)
+        ditto_q.put(None)
+        if ditto_writer:
+            ditto_writer.join(timeout=5)
         ssh.close()
         sys.exit(1)
 
@@ -673,10 +721,7 @@ def collect_loop(ip: str, username: str, password: str, key_filename: Optional[s
             break
         time.sleep(0.05)
 
-    LOGGER.info(
-        "Thread A (Sampler) avviato | intervallo=%.0f ms | CTRL+C per fermare",
-        interval * 1000,
-    )
+    _log("A", logging.INFO, "avviato | intervallo=%.0f ms | CTRL+C per fermare", interval * 1000)
 
     sampled = 0
     log_every = max(1, int(1.0 / interval))   # stampa ~1 riga/s in log
@@ -685,49 +730,59 @@ def collect_loop(ip: str, username: str, password: str, key_filename: Optional[s
             t_start = time.monotonic()
 
             robot = daemon_cli.get()
-            sys_m = sys_thread.get()          # lettura non-bloccante dal Thread C
+            sys_m = sys_thread.get()
             row   = build_row(robot, sys_m)
-            sample_q.put_nowait(row)           # RAM only, mai blocca
 
-            if stream_url:
-                http_post(stream_url, row)
+            if write_csv:
+                sample_q.put_nowait(row)
+
+            if ditto_writer:
+                ditto_q.put_nowait(row)
 
             sampled += 1
             if sampled % log_every == 0:
-                LOGGER.info(
-                    "Camp. %5d | x=%+.4f  y=%+.4f  z=%+.4f | "
-                    "cpu=%s%%  rpi=%s°C  queue=%d",
+                _log("A", logging.INFO,
+                    "camp.%5d | x=%+.4f y=%+.4f z=%+.4f | cpu=%s%% rpi=%s°C | "
+                    "q_csv=%d q_ditto=%d",
                     sampled,
-                    float(row["x_m"])       if row["x_m"]       != "" else 0.0,
-                    float(row["y_m"])       if row["y_m"]       != "" else 0.0,
-                    float(row["z_m"])       if row["z_m"]       != "" else 0.0,
+                    float(row["x_m"])  if row["x_m"]  != "" else 0.0,
+                    float(row["y_m"])  if row["y_m"]  != "" else 0.0,
+                    float(row["z_m"])  if row["z_m"]  != "" else 0.0,
                     row["cpu_percent"] if row["cpu_percent"] != "" else "?",
                     row["rpi_temp_C"]  if row["rpi_temp_C"]  != "" else "?",
                     sample_q.qsize(),
+                    ditto_q.qsize(),
                 )
 
             if count is not None and sampled >= count:
                 break
 
-            # Sleep preciso: compensa il tempo già speso
             elapsed = time.monotonic() - t_start
             sleep_t = interval - elapsed
             if sleep_t > 0:
                 time.sleep(sleep_t)
 
     except KeyboardInterrupt:
-        LOGGER.info("Interruzione richiesta dall'utente")
+        _log("A", logging.INFO, "interruzione richiesta dall'utente")
     except queue.Full:
-        LOGGER.error("Buffer pieno! Il writer non riesce a stare al passo.")
+        _log("A", logging.ERROR, "buffer pieno! il writer non riesce a stare al passo.")
     finally:
         daemon_cli.close()
         sys_thread.stop()
-        sample_q.put(None)          # sentinel per Writer
-        writer.join(timeout=10)
+        sample_q.put(None)
+        if writer:
+            writer.join(timeout=10)
+        ditto_q.put(None)
+        if ditto_writer:
+            ditto_writer.join(timeout=10)
         ssh.close()
+        written_count    = writer.written       if writer       else 0
+        published_count  = ditto_writer.published if ditto_writer else 0
         LOGGER.info(
-            "Raccolta terminata. Campioni acquisiti: %d  |  scritti su disco: %d  →  %s",
-            sampled, writer.written, out_csv,
+            "Raccolta terminata | acquisiti=%d | CSV=%d→%s | Ditto PUT=%d",
+            sampled, written_count,
+            out_csv if write_csv else "(disabilitato)",
+            published_count,
         )
 
 
@@ -748,7 +803,8 @@ def parse_args():
     p.add_argument("--output",   "-o", default=os.environ.get("OUTPUT_FILE",    "data/robot_data.csv"), help="file CSV di output")
     p.add_argument("--count",          type=int,   default=None,                                    help="numero campioni (default: infinito)")
     p.add_argument("--daemon-port",    type=int,   default=int(os.environ.get("DAEMON_PORT", str(DAEMON_PORT))), help="porta TCP daemon sul robot")
-    p.add_argument("--stream-url",     default=os.environ.get("STREAM_URL", None),                              help="URL a cui fare POST di ogni campione (es. http://localhost:8765/sample)")
+    p.add_argument("--no-csv",         action="store_true",                                                      help="disabilita Thread B (scrittura CSV su disco)")
+    p.add_argument("--ditto-url",      default=os.environ.get("DITTO_URL", None),                               help="URL base Eclipse Ditto (es. http://localhost:8080/api/2/things)")
     p.add_argument("--debug",          action="store_true",                                                      help="abilita logging debug")
     return p.parse_args()
 
@@ -770,7 +826,8 @@ def main():
         out_csv=args.output,
         count=args.count,
         daemon_port=args.daemon_port,
-        stream_url=args.stream_url,
+        write_csv=not args.no_csv,
+        ditto_url=args.ditto_url,
     )
 
 
