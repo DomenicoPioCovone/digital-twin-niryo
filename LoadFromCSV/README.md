@@ -25,13 +25,15 @@ Il sistema usa più thread per migliorare le prestazioni.
 ### Thread D – DittoSender
 - Invia dati a Ditto
 - Usa HTTP REST
-### DittoSender
+
+## DittoSender
+
 Funge da legante tra il data_collector e Ditto. Prende una riga dati generata ,suddivide le features e fa una PUT tramite richieste HTTP verso Ditto
-Thread A (Sampler)--> build_row() --> queue Ditto --> Thread D (DittoWriter) --> DittoSender.publish_row() --> HTTP REST API --> Eclipse Ditto (Digital Twin)
+Thread A (Sampler) -> build_row() -> queue Ditto -> Thread D (DittoWriter) -> DittoSender.publish_row() -> HTTP REST API -> Eclipse Ditto (Digital Twin)
 ---
 
 ##  Comunicazione tra thread
-Sampler-->Queue-->Weiter-->Queue-->DittoSander
+Sampler  ->  Queue  -> Weiter -> Queue -> DittoSander
 - thread indipendenti
 - nessun blocco
 - alta efficienza
