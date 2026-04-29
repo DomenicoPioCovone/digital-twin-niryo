@@ -24,7 +24,7 @@ ENV/
 # Dati acquisiti (CSV) – non versionare i file di dati grezzi
 # =============================================================================
 data/
-*.csv
+#*.csv
 
 # =============================================================================
 # File temporanei e di test
