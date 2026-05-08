@@ -5,7 +5,7 @@ FROM = "2026-04-27T15:20:53.777480+02:00"
  
 TO   = "2026-04-27T15:21:27.791208+02:00"
  
-df = pd.read_csv("./data/AnomaliaMattoneDoppio.csv")
+df = pd.read_csv("./data/AnomaliaNonRilevato.csv")
  
 df["timestamp"] = pd.to_datetime(df["timestamp"])
  

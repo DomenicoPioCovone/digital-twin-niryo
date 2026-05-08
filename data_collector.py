@@ -98,7 +98,7 @@ sys.path.insert(0, '/home/niryo/catkin_ws_venv/lib/python3.8/site-packages')
 
 PORT = 9876
 HW_REFRESH_S = 2.0   # get_hardware_status() è lento: aggiornato ogni 2 s
-PUSH_HZ = 50         # frequenza di push verso i client (50 Hz = 20 ms)
+PUSH_HZ = 5         # frequenza di push verso i client (50 Hz = 20 ms)
 
 from pyniryo import NiryoRobot
 
@@ -800,7 +800,7 @@ def parse_args():
     p.add_argument("--password", "-p", default=os.environ.get("ROBOT_PASSWORD", ""),               help="password SSH")
     p.add_argument("--key",            default=os.environ.get("ROBOT_SSH_KEY",  None) or None,     help="chiave privata SSH")
     p.add_argument("--interval", "-t", type=float, default=float(os.environ.get("SAMPLE_INTERVAL", "0.05")), help="intervallo campionamento (s)")
-    p.add_argument("--output",   "-o", default=os.environ.get("OUTPUT_FILE",    "data/robot_data.csv"), help="file CSV di output")
+    p.add_argument("--output",   "-o", default=os.environ.get("OUTPUT_FILE",    "data/robot_data2.csv"), help="file CSV di output")
     p.add_argument("--count",          type=int,   default=None,                                    help="numero campioni (default: infinito)")
     p.add_argument("--daemon-port",    type=int,   default=int(os.environ.get("DAEMON_PORT", str(DAEMON_PORT))), help="porta TCP daemon sul robot")
     p.add_argument("--no-csv",         action="store_true",                                                      help="disabilita Thread B (scrittura CSV su disco)")

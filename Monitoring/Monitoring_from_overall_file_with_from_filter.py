@@ -1,12 +1,10 @@
 import pandas as pd
 import matplotlib.pyplot as plt
- 
-FROM = "2026-04-27T15:20:53.777480+02:00"
- 
-TO   = "2026-04-27T15:22:44.989905+02:00"
- 
+
+FROM = "2026-04-27T15:37:07+02:00"
+
 df = pd.read_csv("./data/AnomaliaNonRilevato.csv")
- 
+
 # parsing corretto con timezone
 df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
 
