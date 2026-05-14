@@ -1,7 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-df = pd.read_csv("./data/FunzionamentoNormaleCompleto.csv")
+df = pd.read_csv("./AnalisiFrequenza/Aliasing1000ms.csv")
 
 # parsing corretto con timezone
 df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
